@@ -47,8 +47,4 @@ resource "null_resource" "create_lambda_packages_dir" {
   }
 }
 
-# Data source for current AWS region
-data "aws_region" "current" {}
-
-# Data source for current AWS account ID
-data "aws_caller_identity" "current" {}
+# Data sources are defined in main.tf to avoid duplication
