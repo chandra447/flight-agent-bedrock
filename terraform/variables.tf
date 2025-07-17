@@ -1,5 +1,23 @@
 # Variables for travel booking multi-agent system
 
+variable "aws_region" {
+  description = "AWS region for deployment"
+  type        = string
+  default     = "ap-southeast-2"
+}
+
+variable "environment" {
+  description = "Environment name (production, test, etc.)"
+  type        = string
+  default     = "production"
+}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "bedrock-multi-agent"
+}
+
 variable "foundation_model" {
   description = "Foundation model to use for all agents"
   type        = string

@@ -33,7 +33,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Format
-        run: terraform fmt --recursive
+        run: cd terraform && terraform fmt --recursive
 
   # Detect if we should deploy/destroy based on branch and commit message
   detect-action-trigger:
@@ -140,6 +140,7 @@ jobs:
 
       - name: Create Terraform backend config
         run: |
+          cd terraform
           cat > backend.tf << EOF
           terraform {
             backend "s3" {
@@ -152,6 +153,7 @@ jobs:
 
       - name: Create terraform.tfvars
         run: |
+          cd terraform
           cat > terraform.tfvars << EOF
           foundation_model = "${{ env.TF_VAR_foundation_model }}"
           environment = "${{ needs.detect-action-trigger.outputs.environment }}"
@@ -160,20 +162,32 @@ jobs:
           EOF
 
       - name: Terraform Init
-        run: terraform init
+        run: cd terraform && terraform init
 
       - name: Terraform Validate
-        run: terraform validate
+        run: cd terraform && terraform validate
+
+      - name: Check database file exists
+        run: |
+          if [ ! -f "database/travel_booking.db" ]; then
+            echo "❌ Database file not found at database/travel_booking.db"
+            echo "Creating empty database file for testing..."
+            mkdir -p database
+            touch database/travel_booking.db
+          else
+            echo "✅ Database file found: $(ls -lh database/travel_booking.db)"
+          fi
 
       - name: Terraform Plan
         run: |
+          cd terraform
           terraform plan -out=tfplan -var-file=terraform.tfvars
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ needs.detect-action-trigger.outputs.stack_name }}
-          path: tfplan
+          path: terraform/tfplan
           retention-days: 5
 
   terraform-apply:
@@ -201,6 +215,7 @@ jobs:
 
       - name: Create Terraform backend config
         run: |
+          cd terraform
           cat > backend.tf << EOF
           terraform {
             backend "s3" {
@@ -213,6 +228,7 @@ jobs:
 
       - name: Create terraform.tfvars
         run: |
+          cd terraform
           cat > terraform.tfvars << EOF
           foundation_model = "${{ env.TF_VAR_foundation_model }}"
           environment = "${{ needs.detect-action-trigger.outputs.environment }}"
@@ -221,15 +237,27 @@ jobs:
           EOF
 
       - name: Terraform Init
-        run: terraform init
+        run: cd terraform && terraform init
+
+      - name: Check database file exists
+        run: |
+          if [ ! -f "database/travel_booking.db" ]; then
+            echo "❌ Database file not found at database/travel_booking.db"
+            echo "Creating empty database file for testing..."
+            mkdir -p database
+            touch database/travel_booking.db
+          else
+            echo "✅ Database file found: $(ls -lh database/travel_booking.db)"
+          fi
 
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ needs.detect-action-trigger.outputs.stack_name }}
+          path: terraform/
 
       - name: Terraform Apply
-        run: terraform apply tfplan
+        run: cd terraform && terraform apply tfplan
 
       - name: Output results
         run: |
@@ -241,7 +269,7 @@ jobs:
           echo "- **Foundation Model**: ${{ env.TF_VAR_foundation_model }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Agent Details" >> $GITHUB_STEP_SUMMARY
-          terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+          cd terraform && terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
 
   terraform-destroy:
     name: Terraform Destroy
@@ -268,6 +296,7 @@ jobs:
 
       - name: Create Terraform backend config
         run: |
+          cd terraform
           cat > backend.tf << EOF
           terraform {
             backend "s3" {
@@ -280,6 +309,7 @@ jobs:
 
       - name: Create terraform.tfvars
         run: |
+          cd terraform
           cat > terraform.tfvars << EOF
           foundation_model = "${{ env.TF_VAR_foundation_model }}"
           environment = "${{ needs.detect-action-trigger.outputs.environment }}"
@@ -290,6 +320,7 @@ jobs:
       - name: Check if state exists
         id: state_check
         run: |
+          cd terraform
           terraform init
           if terraform show > /dev/null 2>&1; then
             echo "state_exists=true" >> $GITHUB_OUTPUT
@@ -300,6 +331,7 @@ jobs:
       - name: Terraform Destroy
         if: steps.state_check.outputs.state_exists == 'true'
         run: |
+          cd terraform
           terraform destroy -auto-approve -var-file=terraform.tfvars
 
       - name: Remove state file
