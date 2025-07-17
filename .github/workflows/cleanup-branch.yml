@@ -1,0 +1,90 @@
+name: Cleanup Branch Resources
+
+on:
+  delete:
+    branches:
+      - 'feature/**'
+      - 'hotfix/**'
+
+# Add permissions for OIDC token
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.6.0"
+  AWS_REGION: "ap-southeast-2"
+
+jobs:
+  cleanup-test-stack:
+    name: Cleanup Test Stack
+    runs-on: ubuntu-latest
+    if: github.event.ref_type == 'branch'
+    
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::095811638868:role/git-action-tf
+          role-session-name: GitHubActions-BranchCleanup
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Determine stack name
+        id: stack
+        run: |
+          BRANCH_NAME="${{ github.event.ref }}"
+          SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]')
+          STACK_NAME="bedrock-multi-agent-test-${SAFE_BRANCH}"
+          echo "stack_name=$STACK_NAME" >> $GITHUB_OUTPUT
+          echo "Cleaning up stack: $STACK_NAME"
+          
+      - name: Check if state exists
+        id: state_check
+        run: |
+          if aws s3api head-object --bucket "${{ secrets.TF_STATE_BUCKET }}" --key "${{ steps.stack.outputs.stack_name }}/terraform.tfstate" 2>/dev/null; then
+            echo "state_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "state_exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Destroy infrastructure
+        if: steps.state_check.outputs.state_exists == 'true'
+        run: |
+          # Create backend config
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket = "${{ secrets.TF_STATE_BUCKET }}"
+              key    = "${{ steps.stack.outputs.stack_name }}/terraform.tfstate"
+              region = "${{ env.AWS_REGION }}"
+            }
+          }
+          EOF
+          
+          # Create terraform.tfvars
+          cat > terraform.tfvars << EOF
+          foundation_model = "mistral.mistral-7b-instruct-v0:2"
+          environment = "test"
+          project_name = "${{ steps.stack.outputs.stack_name }}"
+          aws_region = "${{ env.AWS_REGION }}"
+          EOF
+          
+          # Initialize and destroy
+          terraform init
+          terraform destroy -auto-approve -var-file=terraform.tfvars
+          
+      - name: Remove state file
+        if: steps.state_check.outputs.state_exists == 'true'
+        run: |
+          aws s3 rm "s3://${{ secrets.TF_STATE_BUCKET }}/${{ steps.stack.outputs.stack_name }}/terraform.tfstate"
+          echo "Cleaned up state for ${{ steps.stack.outputs.stack_name }}"

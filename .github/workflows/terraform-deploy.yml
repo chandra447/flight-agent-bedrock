@@ -1,0 +1,311 @@
+name: Terraform Workflow
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+      - "hotfix/**"
+  pull_request:
+    branches:
+      - main
+
+# Add permissions for OIDC token
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.6.0"
+  AWS_REGION: "ap-southeast-2"
+  TF_VAR_foundation_model: "mistral.mistral-7b-instruct-v0:2"
+
+jobs:
+  # Always run format check on all branches
+  terraform-format:
+    name: Terraform Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: Terraform Format
+        run: terraform fmt --recursive
+  
+  # Detect if we should deploy/destroy based on branch and commit message
+  detect-action-trigger:
+    name: Detect Action Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
+      should_destroy: ${{ steps.check.outputs.should_destroy }}
+      environment: ${{ steps.check.outputs.environment }}
+      stack_name: ${{ steps.check.outputs.stack_name }}
+    steps:
+      - name: Check for action trigger
+        id: check
+        run: |
+          # Check commit message for actions
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          BRANCH_NAME="${{ github.ref_name }}"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_HASH=$(echo "$COMMIT_HASH" | cut -c1-8)
+          
+          if [[ "$BRANCH_NAME" == "main" ]]; then
+            # Always deploy on main branch
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "should_destroy=false" >> $GITHUB_OUTPUT
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "stack_name=bedrock-multi-agent-prod" >> $GITHUB_OUTPUT
+          elif [[ "$COMMIT_MSG" == *"terraform deploy"* ]]; then
+            # Deploy on feature branches with commit hash prefix
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "should_destroy=false" >> $GITHUB_OUTPUT
+            echo "environment=test" >> $GITHUB_OUTPUT
+            echo "stack_name=bedrock-multi-agent-test-${SHORT_HASH}" >> $GITHUB_OUTPUT
+          elif [[ "$COMMIT_MSG" == *"terraform destroy"* ]]; then
+            # Destroy isolated environment
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "should_destroy=true" >> $GITHUB_OUTPUT
+            echo "environment=test" >> $GITHUB_OUTPUT
+            echo "stack_name=bedrock-multi-agent-test-${SHORT_HASH}" >> $GITHUB_OUTPUT
+          else
+            # Don't deploy/destroy for other commits on feature branches
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "should_destroy=false" >> $GITHUB_OUTPUT
+          fi
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: [terraform-format, detect-action-trigger]
+    if: needs.detect-action-trigger.outputs.should_deploy == 'true'
+    environment: ${{ needs.detect-action-trigger.outputs.environment }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::095811638868:role/git-action-tf
+          role-session-name: GitHubActions-TerraformPlan
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Create Terraform backend config
+        run: |
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket = "${{ secrets.TF_STATE_BUCKET }}"
+              key    = "${{ needs.detect-action-trigger.outputs.stack_name }}/terraform.tfstate"
+              region = "${{ env.AWS_REGION }}"
+            }
+          }
+          EOF
+          
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform.tfvars << EOF
+          foundation_model = "${{ env.TF_VAR_foundation_model }}"
+          environment = "${{ needs.detect-action-trigger.outputs.environment }}"
+          project_name = "${{ needs.detect-action-trigger.outputs.stack_name }}"
+          aws_region = "${{ env.AWS_REGION }}"
+          EOF
+          
+      - name: Terraform Init
+        run: terraform init
+        
+      - name: Terraform Validate
+        run: terraform validate
+        
+      - name: Terraform Plan
+        run: |
+          terraform plan -out=tfplan -var-file=terraform.tfvars
+          
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.detect-action-trigger.outputs.stack_name }}
+          path: tfplan
+          retention-days: 5
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [detect-action-trigger, terraform-plan]
+    if: needs.detect-action-trigger.outputs.should_deploy == 'true'
+    environment: ${{ needs.detect-action-trigger.outputs.environment }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::095811638868:role/git-action-tf
+          role-session-name: GitHubActions-TerraformApply
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Create Terraform backend config
+        run: |
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket = "${{ secrets.TF_STATE_BUCKET }}"
+              key    = "${{ needs.detect-action-trigger.outputs.stack_name }}/terraform.tfstate"
+              region = "${{ env.AWS_REGION }}"
+            }
+          }
+          EOF
+          
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform.tfvars << EOF
+          foundation_model = "${{ env.TF_VAR_foundation_model }}"
+          environment = "${{ needs.detect-action-trigger.outputs.environment }}"
+          project_name = "${{ needs.detect-action-trigger.outputs.stack_name }}"
+          aws_region = "${{ env.AWS_REGION }}"
+          EOF
+          
+      - name: Terraform Init
+        run: terraform init
+        
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.detect-action-trigger.outputs.stack_name }}
+          
+      - name: Terraform Apply
+        run: terraform apply tfplan
+        
+      - name: Output results
+        run: |
+          echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.detect-action-trigger.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stack**: ${{ needs.detect-action-trigger.outputs.stack_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Foundation Model**: ${{ env.TF_VAR_foundation_model }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Agent Details" >> $GITHUB_STEP_SUMMARY
+          terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    needs: [terraform-format, detect-action-trigger]
+    if: needs.detect-action-trigger.outputs.should_destroy == 'true'
+    environment: ${{ needs.detect-action-trigger.outputs.environment }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::095811638868:role/git-action-tf
+          role-session-name: GitHubActions-TerraformDestroy
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Create Terraform backend config
+        run: |
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket = "${{ secrets.TF_STATE_BUCKET }}"
+              key    = "${{ needs.detect-action-trigger.outputs.stack_name }}/terraform.tfstate"
+              region = "${{ env.AWS_REGION }}"
+            }
+          }
+          EOF
+          
+      - name: Create terraform.tfvars
+        run: |
+          cat > terraform.tfvars << EOF
+          foundation_model = "${{ env.TF_VAR_foundation_model }}"
+          environment = "${{ needs.detect-action-trigger.outputs.environment }}"
+          project_name = "${{ needs.detect-action-trigger.outputs.stack_name }}"
+          aws_region = "${{ env.AWS_REGION }}"
+          EOF
+          
+      - name: Check if state exists
+        id: state_check
+        run: |
+          terraform init
+          if terraform show > /dev/null 2>&1; then
+            echo "state_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "state_exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Terraform Destroy
+        if: steps.state_check.outputs.state_exists == 'true'
+        run: |
+          terraform destroy -auto-approve -var-file=terraform.tfvars
+          
+      - name: Remove state file
+        if: steps.state_check.outputs.state_exists == 'true'
+        run: |
+          aws s3 rm "s3://${{ secrets.TF_STATE_BUCKET }}/${{ needs.detect-action-trigger.outputs.stack_name }}/terraform.tfstate"
+          echo "Cleaned up state for ${{ needs.detect-action-trigger.outputs.stack_name }}"
+          
+      - name: Output destroy results
+        run: |
+          echo "## Destroy Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ needs.detect-action-trigger.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stack**: ${{ needs.detect-action-trigger.outputs.stack_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Action**: Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+
+  cleanup-test-stacks:
+    name: Cleanup Old Test Stacks
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::095811638868:role/git-action-tf
+          role-session-name: GitHubActions-Cleanup
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: List and cleanup old test stacks
+        run: |
+          # List S3 objects in state bucket with test prefix
+          aws s3api list-objects-v2 \
+            --bucket "${{ secrets.TF_STATE_BUCKET }}" \
+            --prefix "bedrock-multi-agent-test-" \
+            --query 'Contents[?LastModified<=`'"$(date -d '7 days ago' -Iso-8601)"'`].Key' \
+            --output text | while read -r key; do
+              if [[ -n "$key" ]]; then
+                echo "Found old test stack state: $key"
+                # Here you could add logic to destroy the stack before removing state
+                # aws s3 rm "s3://${{ secrets.TF_STATE_BUCKET }}/$key"
+              fi
+            done
