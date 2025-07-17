@@ -45,14 +45,40 @@ jobs:
       environment: ${{ steps.check.outputs.environment }}
       stack_name: ${{ steps.check.outputs.stack_name }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Check for action trigger
         id: check
         run: |
           # Check commit message for actions - handle both push and pull_request events
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            COMMIT_MSG="${{ github.event.pull_request.title }}"
             BRANCH_NAME="${{ github.head_ref }}"
             COMMIT_HASH="${{ github.event.pull_request.head.sha }}"
+            
+            # Check both PR title and individual commit messages in the PR
+            PR_TITLE="${{ github.event.pull_request.title }}"
+            echo "PR Title: $PR_TITLE"
+            
+            # Get all commit messages in this PR
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            
+            echo "Checking commits from $BASE_SHA to $HEAD_SHA"
+            COMMIT_MESSAGES=$(git log --format="%s" $BASE_SHA..$HEAD_SHA)
+            echo "Commit messages in PR:"
+            echo "$COMMIT_MESSAGES"
+            
+            # Check if any commit message or PR title contains terraform deploy/destroy
+            if [[ "$PR_TITLE" == *"terraform deploy"* ]] || echo "$COMMIT_MESSAGES" | grep -q "terraform deploy"; then
+              COMMIT_MSG="terraform deploy"
+            elif [[ "$PR_TITLE" == *"terraform destroy"* ]] || echo "$COMMIT_MESSAGES" | grep -q "terraform destroy"; then
+              COMMIT_MSG="terraform destroy"
+            else
+              COMMIT_MSG="$PR_TITLE"
+            fi
           else
             COMMIT_MSG="${{ github.event.head_commit.message }}"
             BRANCH_NAME="${{ github.ref_name }}"
@@ -61,7 +87,7 @@ jobs:
           SHORT_HASH=$(echo "$COMMIT_HASH" | cut -c1-8)
 
           echo "Event: ${{ github.event_name }}"
-          echo "Commit Message: $COMMIT_MSG"
+          echo "Final Commit Message: $COMMIT_MSG"
           echo "Branch: $BRANCH_NAME"
           echo "Commit Hash: $COMMIT_HASH"
 
