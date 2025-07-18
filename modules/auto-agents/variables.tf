@@ -35,10 +35,6 @@ variable "idle_session_ttl_in_seconds" {
   description = "The number of seconds that a Bedrock agent session is maintained. (60-3600 seconds)"
   type        = number
   default     = null
-  validation {
-    condition     = var.idle_session_ttl_in_seconds == null || (var.idle_session_ttl_in_seconds != null && var.idle_session_ttl_in_seconds >= 60 && var.idle_session_ttl_in_seconds <= 3600)
-    error_message = "idle_session_ttl_in_seconds must be between 60 and 3600 seconds, or null."
-  }
 }
 
 variable "agent_collaboration" {
