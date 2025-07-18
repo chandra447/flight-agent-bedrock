@@ -44,11 +44,11 @@ output "action_group_ids" {
   }
 }
 
-output "action_group_arns" {
-  description = "Map of action group names to their ARNs"
+output "action_group_composite_ids" {
+  description = "Map of action group names to their composite IDs (action_group_id,agent_id,agent_version)"
   value = {
     for k, ag in aws_bedrockagent_agent_action_group.action_groups : 
-    var.action_groups[k].name => ag.action_group_arn
+    var.action_groups[k].name => ag.id
   }
 }
 

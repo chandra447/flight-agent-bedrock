@@ -257,7 +257,7 @@ output "agent_resource_role_name" { }
 
 # Action Groups
 output "action_group_ids" { }
-output "action_group_arns" { }
+output "action_group_composite_ids" { }
 
 # Agent Aliases
 output "agent_alias_ids" { }
