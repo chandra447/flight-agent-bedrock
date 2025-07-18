@@ -106,7 +106,7 @@ module "travel_supervisor_agent" {
   agent_instruction = file("${path.module}/../agent_instructions/travel_supervisor_instruction.txt")
 
   # Supervisor configuration
-  agent_collaboration = "SUPERVISOR"
+  # agent_collaboration = "SUPERVISOR"
   prepare_agent      = true
 
   # Memory configuration
