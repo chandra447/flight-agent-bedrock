@@ -36,7 +36,7 @@ variable "idle_session_ttl_in_seconds" {
   type        = number
   default     = null
   validation {
-    condition     = var.idle_session_ttl_in_seconds == null || (var.idle_session_ttl_in_seconds >= 60 && var.idle_session_ttl_in_seconds <= 3600)
+    condition     = var.idle_session_ttl_in_seconds == null || (var.idle_session_ttl_in_seconds != null && var.idle_session_ttl_in_seconds >= 60 && var.idle_session_ttl_in_seconds <= 3600)
     error_message = "idle_session_ttl_in_seconds must be between 60 and 3600 seconds, or null."
   }
 }
